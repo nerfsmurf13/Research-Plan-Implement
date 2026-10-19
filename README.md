@@ -16,121 +16,113 @@ AI coding assistants are powerful, but they fail in predictable ways:
 - **Scope creep** - AI goes off-track without clear boundaries
 - **The "fix loop"** - Repeated failed attempts that never converge
 - **Generic output** - Responses that ignore your codebase's patterns
+- **Destructive mistakes** - A "quick cleanup" that drops a table or wipes production data
 
-**RPI solves this** with a structured workflow that keeps AI focused, informed, and operating on clean context.
+**RPI solves this** with a structured workflow that keeps AI focused, informed, operating on clean context, and away from your data.
 
 ---
 
 ## How It Works
 
 ```
-          +---------------+          +---------------+          +---------------+
-          |   /research   |   --->   |    /plan      |   --->   |  /implement   |
-          |               |          |               |          |               |
-          |  Map codebase |          | Get approval  |          |   Execute     |
-          |  Find risks   |          | before coding |          |   with guard  |
-          +---------------+          +---------------+          +---------------+
-                 |                          |                          |
-                 |                          |                          |
-                 +------------+-------------+--------------------------+
-                              |
-                              v
-                       +---------------+
-                       |   /compact    |
-                       |               |
-                       | Reset context |
-                       | at milestones |
-                       +---------------+
+ +-------------+      +--------------+      +-------------+      +-------------+
+ |  /research  | ---> | /crosscheck  | ---> |    /plan    | ---> | /implement  |
+ |             |      |  (optional)  |      |             |      |             |
+ | Subagents   |      | Gemini + GPT |      | Human must  |      | Step by     |
+ | map the code|      | second look  |      | approve     |      | step, with  |
+ | and risks   |      | via PAL MCP  |      |             |      | checks      |
+ +-------------+      +--------------+      +-------------+      +-------------+
 ```
-
-### The Three Phases
 
 | Phase | Command | Purpose | Output |
 |-------|---------|---------|--------|
-| **Research** | `/research [topic]` | Explore codebase, map dependencies, find risks | `research-[topic].md` |
-| **Plan** | `/plan [feature]` | Design implementation with atomic steps | `plan-[feature].md` |
-| **Implement** | `/implement` | Execute approved plan step-by-step | Working code |
+| **Research** | `/research [topic]` | Stack-specific subagent maps the flow, cites `file:line`, finds risks | `research-[topic].md` |
+| **Crosscheck** | `/crosscheck research [topic]` | Optional review by Gemini and GPT; skipped when PAL MCP is offline | `verified-[doc].md` |
+| **Plan** | `/plan [feature]` | Steps that target symbols, each with a concrete verification | `plan-[feature].md` |
+| **Implement** | `/implement [feature]` | Executes the approved plan, checks off steps in the plan file | Working code |
+
+Trivial fixes (a typo, an obvious one-line bug) skip the flow. Everything that touches several files, data access, auth, integrations, or both frontend and backend goes through it.
 
 ---
 
 ## Key Features
 
-### Specialized Research Agents
+### Research runs in subagents
 
-RPI includes stack-specific research agents that understand framework conventions:
+Researchers are registered Claude Code subagents. They do the heavy reading in their own context and return only the report, so the main conversation stays clean.
 
 | Agent | Best For |
 |-------|----------|
-| `researcher.md` | General codebases |
-| `researcher-vue.md` | Vue.js + JavaScript (Composition API, Pinia, Vue Router) |
-| `researcher-python.md` | Python (FastAPI, Flask, Django, SQLAlchemy) |
+| `researcher-dotnet` | C# / .NET: ASP.NET Core, EF Core, Dapper, DI, middleware, background jobs |
+| `researcher-vue` | Vue 2/3: components, reactivity, Pinia/Vuex, Vue Router, API layer, JS or TS |
+| `researcher-node` | Node.js servers: Express, Fastify, NestJS, Prisma, Sequelize, Mongoose |
+| `researcher-python` | Python: FastAPI, Flask, Django, SQLAlchemy |
+| `researcher` | Any other stack |
 
-Each agent produces structured research documents with:
-- Architecture diagrams
-- Data flow maps
-- Risk assessments ("landmine detection")
-- Specific file:line references
-- Stack-specific gotchas
+`/research` picks the agent from your `CLAUDE.md` Project section or from manifest files (`*.csproj`, `package.json`, `pyproject.toml`, ...).
 
-### Context Health Management
+### Full-stack topics (e.g. ASP.NET Core + Vue)
 
-```
-/status          Check context health (Fresh/Warming/Compact Soon)
-/compact         Compress session for handoff
-/reset           Nuclear option for poisoned context
-```
+When a topic crosses the frontend/backend boundary, `/research` runs the matching researchers **in parallel**. The Vue researcher lists the endpoints and payload shapes the UI depends on; the .NET researcher confirms or contradicts them. The index document records any contract mismatches (field names, casing, nullability), and `/plan` orders the steps so the API contract lands first.
 
-**Context degradation signals:**
-- AI repeats rejected suggestions
-- Responses feel generic
-- AI forgets earlier changes
-- You're "yelling" at the AI
+### Serena-first, grep fallback
+
+Agents use [Serena](https://github.com/oraios/serena) (v2) symbol tools (`find_symbol`, `find_referencing_symbols`, `find_implementations`, ...) for language-server-accurate navigation, and native Grep/Glob for text and file searches. If Serena is not connected, they say so and carry on with Grep/Glob/Read.
+
+### Data Safety
+
+`CLAUDE.md` forbids Claude from running anything that deletes or bulk-modifies data: destructive SQL, ORM reset commands, wipe endpoints, cloud resource deletion, force pushes. Claude writes such scripts to a file and hands them to a human.
+
+A **PreToolUse hook** (`.claude/hooks/block_destructive.py`) backs this up by denying matching Bash/PowerShell commands, including `DELETE FROM`, `DROP TABLE`, `dotnet ef database drop`, `prisma migrate reset`, `manage.py flush`, `az ... delete`, `terraform destroy` and `git push --force`. Add your project's own dangerous endpoints to `PROJECT_RULES`.
+
+### Plans you can resume
+
+Plans name targets by symbol (`OrderService/GetOrders`, `useCartStore`) rather than line numbers alone, scale to the size of the change, flag destructive paths for explicit approval, and use checkboxes that `/implement` ticks off, so a fresh session picks up where the last one stopped.
 
 ---
 
 ## Quick Start
 
-### 1. Add to Your Project
+### 1. Add to your project
 
 ```bash
-# Clone into your project
-git clone https://github.com/yourusername/rpi-framework.git .claude
-
-# Or copy the files
-cp -r rpi-framework/.claude your-project/
+git clone https://github.com/nerfsmurf13/Research-Plan-Implement.git rpi
+cp -r rpi/.claude your-project/
+cp rpi/CLAUDE.md your-project/CLAUDE.md   # or merge into your existing CLAUDE.md
 ```
 
-### 2. Reference in CLAUDE.md
+Then in your project:
 
-Create a `CLAUDE.md` in your project root:
+- Fill in the **Project** section at the bottom of `CLAUDE.md`: stack, which researchers to use, verification commands, and destructive endpoints.
+- Delete the researcher agents you do not need.
+- Add your destructive endpoints to `PROJECT_RULES` in `.claude/hooks/block_destructive.py`.
+- Gitignore the working docs:
 
-```markdown
-# Project Instructions
+  ```gitignore
+  research-*.md
+  plan-*.md
+  verified-*.md
+  handoff-*.md
+  CLAUDE.local.md
+  .claude/settings.local.json
+  ```
 
-This project uses the RPI Framework.
+The hook needs `python` on your `PATH`.
 
-Commands: /research, /plan, /implement, /compact, /status, /reset
+### 2. Optional tooling
 
-Rules:
-1. Never code without research
-2. Never implement without an approved plan
-3. Compact every 15-20 exchanges
-```
+- **Serena MCP** for symbol-aware research. For Vue projects, enable the Vue (or TypeScript) language server in the Serena project config.
+- **PAL MCP** for `/crosscheck` (Gemini + GPT review). Without it, `/crosscheck` skips cleanly.
 
-### 3. Use the Workflow
+### 3. Use the workflow
 
 ```bash
-# Starting a new feature
-/research authentication flow
-
-# Review research doc, then:
-/plan user login feature
-
-# Review plan, say "plan approved", then:
-/implement
-
-# Every 15-20 messages:
-/compact
+/research order history page          # writes research-order-history-page.md
+# review it, answer blocking questions
+/crosscheck research order-history-page   # optional
+/plan order history filters           # writes plan-order-history-filters.md
+# review it, reply "plan approved"
+/implement order history filters
 ```
 
 ---
@@ -138,20 +130,27 @@ Rules:
 ## Project Structure
 
 ```
+CLAUDE.md                      # Rules, Data Safety, agents, and your Project section
 .claude/
+├── settings.json              # Wires the Data Safety hook
+├── hooks/
+│   └── block_destructive.py   # PreToolUse hook that denies destructive shell commands
 ├── commands/
-│   ├── research.md      # Activates researcher agent
-│   ├── plan.md          # Planning mode instructions
-│   ├── implement.md     # Implementation mode instructions
-│   ├── compact.md       # Context compression protocol
-│   ├── status.md        # Session health check
-│   └── reset.md         # Context reset protocol
-│
+│   ├── research.md            # Picks and spawns researcher subagent(s)
+│   ├── crosscheck.md          # Optional Gemini + GPT review via PAL MCP
+│   ├── plan.md                # Planning rules and plan template
+│   ├── implement.md           # Executes an approved plan
+│   └── reset.md               # Recovery protocol after repeated failures
 └── agents/
-    ├── researcher.md        # General-purpose research agent
-    ├── researcher-vue.md    # Vue.js specialized agent
-    └── researcher-python.md # Python specialized agent
+    ├── researcher-dotnet.md   # C# / .NET
+    ├── researcher-vue.md      # Vue.js
+    ├── researcher-node.md     # Node.js servers
+    ├── researcher-python.md   # Python
+    ├── researcher.md          # General fallback
+    └── verifier.md            # Multi-model verification for /crosscheck
 ```
+
+Context health uses Claude Code's built-ins (`/context`, `/compact`, `/clear`, `/rewind`); RPI no longer ships its own `/compact` and `/status`.
 
 ---
 
@@ -159,63 +158,31 @@ Rules:
 
 ### `/research [topic]`
 
-Activates a research agent to explore your codebase. Produces a structured document with:
+Spawns the stack's researcher subagent(s). Each report contains:
 
-- **Executive Summary** - What this area does
-- **Architecture Overview** - Entry points, core components, data flow
-- **Key Code Locations** - Critical files with line numbers
-- **Patterns & Conventions** - Naming, structure, anti-patterns
-- **Risks & Landmines** - Tech debt, gotchas, warnings
-- **Recommendations** - Suggested approach
+- **Stack** line, confirmed from the code
+- **Summary** of what exists and what matters for the change
+- **Flow** traced hop by hop with `file:line`
+- **Key Code** table
+- **Risks and Findings**, only where they apply to the traced code, including destructive paths
+- **Open Questions** marked as blockers or not
+- **Recommendations**, including how to verify locally
+
+### `/crosscheck research [topic] | plan [feature] | [file].md`
+
+Optional. Sends the document and the source files it cites to Gemini and GPT via PAL MCP, spot-checks citations, and writes `verified-[doc].md` with both verdicts side by side.
 
 ### `/plan [feature]`
 
-Creates an implementation plan with:
+Creates `plan-[feature].md` with an objective, success criteria, checkbox steps (target symbol, change, verification), verify-after-deploy checks, destructive paths, risks and open questions. **Stops for approval.**
 
-- **Success Criteria** - Definition of done
-- **Implementation Steps** - Atomic changes with file:line targets
-- **Verification** - How to confirm each step
-- **Rollback Strategy** - How to undo if needed
-- **Risk Assessment** - What could go wrong
+### `/implement [feature]`
 
-**Plans require explicit approval before implementation.**
-
-### `/implement`
-
-Executes an approved plan with:
-
-- Step-by-step progress reporting
-- Verification after each change
-- Blocker detection with options
-- Completion report with summary
-
-### `/compact`
-
-Compresses session context into a handoff document:
-
-- Work completed and remaining
-- Key decisions made
-- Problems and solutions
-- Files modified
-- Commands to continue
-
-### `/status`
-
-Quick health check:
-
-```
-Context Health: Fresh / Warming / Compact Soon
-Exchanges: ~N messages
-Recommendation: Keep going / Consider compacting / Reset needed
-```
+Executes the approved plan step by step, runs each step's verification, ticks the step off in the plan file, stops at blockers, and never commits unless asked.
 
 ### `/reset`
 
-For poisoned context (2+ failures on same task):
-
-1. Extract what worked
-2. Document the failure
-3. Start fresh with clean context
+For poisoned context (2+ failures on the same task): salvage what worked, write `handoff-[task].md`, `/clear`, and restart from research or the still-valid plan.
 
 ---
 
@@ -229,42 +196,37 @@ RPI is built on these principles:
 2. **AI amplifies thinking, doesn't replace it** - Stay in the driver's seat
 3. **Fresh context beats polluted context** - Reset early, not late
 4. **One feature per session** - Keep scope tight
+5. **AI never touches your data destructively** - It writes the script; you run it
 
 ---
 
 ## Extending RPI
 
-### Adding New Agents
+### Adding a researcher
 
-Create a new agent in `.claude/agents/`:
-
-```markdown
-# [Framework] Researcher Agent
-
-Specialized research agent for [Framework] codebases.
-
-## Mission
-Investigate: $ARGUMENTS
-
-## Stack-Specific Investigation
-[Framework-specific search patterns]
-
-## Output Format
-[Customized research document template]
-```
-
-### Custom Commands
-
-Add commands in `.claude/commands/`:
+Create `.claude/agents/researcher-[stack].md` with frontmatter so Claude Code registers it as a subagent, and follow the shape of the existing researchers:
 
 ```markdown
-# [Command] Command
+---
+name: researcher-[stack]
+description: "Research agent for [stack] codebases. Maps ... and writes research-[topic].md. Use for the Research phase of the RPI workflow."
+color: green
+---
 
-[Instructions for the AI]
+# [Stack] Researcher
 
-## Output Format
-[Expected output structure]
+## Establish the stack first
+## Tools: Serena first, grep fallback
+## How to research
+## Constraints
+## Output
 ```
+
+Then add its detection signal to the table in `.claude/commands/research.md`.
+
+### Custom commands
+
+Add commands in `.claude/commands/` with `description` (and `argument-hint`) frontmatter. Use `disable-model-invocation: true` for commands only a human should trigger.
 
 ---
 
@@ -272,19 +234,17 @@ Add commands in `.claude/commands/`:
 
 ### Do
 
-- Research before every new feature
+- Research before every non-trivial change
+- Fill in the Project section of `CLAUDE.md`, especially verification commands and destructive endpoints
 - Review and approve plans before implementation
-- Compact at milestones (every 15-20 exchanges)
 - Reset after 2 failures on the same task
-- Trust the workflow
 
 ### Don't
 
-- Start coding without research
 - Skip plan approval
 - Let error history accumulate
-- Fight the AI when context is poisoned
 - Try to "power through" failures
+- Ask Claude to run cleanup scripts against real data
 
 ---
 
@@ -292,11 +252,11 @@ Add commands in `.claude/commands/`:
 
 | Without RPI | With RPI |
 |-------------|----------|
-| AI hallucinates file structures | Research maps actual codebase |
+| AI hallucinates file structures | Research maps the actual codebase with citations |
 | Changes break unknown dependencies | Plan identifies blast radius |
+| Frontend and backend drift apart | Full-stack research flags contract mismatches |
 | Error loops never converge | Reset protocol breaks the loop |
-| Context degrades mid-session | Compact preserves progress |
-| Generic, non-idiomatic code | Agents learn your patterns |
+| A "quick fix" wipes a table | Data Safety rules and a hook block destructive commands |
 
 ---
 
@@ -304,10 +264,9 @@ Add commands in `.claude/commands/`:
 
 Contributions welcome! Areas of interest:
 
-- New stack-specific research agents (Rust, Go, React, etc.)
+- New stack-specific researchers (Go, Rust, Java, React, Angular, ...)
+- More destructive-command patterns for the hook
 - Additional utility commands
-- Integration with CI/CD pipelines
-- IDE extensions
 
 ---
 

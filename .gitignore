@@ -1,1 +1,4 @@
 settings.local.json
+CLAUDE.local.md
+.serena/
+__pycache__/
